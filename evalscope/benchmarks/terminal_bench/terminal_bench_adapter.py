@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import shutil
@@ -20,14 +21,30 @@ from evalscope.utils.function_utils import AsyncioLoopRunner
 from evalscope.utils.import_utils import check_import
 from evalscope.utils.logger import get_logger
 
+from .ack_environment import TASK_NAME, TASK_PACKAGE_REF, fixed_ack_kwargs
+
 logger = get_logger()
+
+ACK_WALL_CLOCK_TIMEOUT_SECONDS = 4 * 60 * 60
+
+
+async def _run_ack_trial(trial, timeout_seconds: float = ACK_WALL_CLOCK_TIMEOUT_SECONDS):
+    try:
+        result = await asyncio.wait_for(trial.run(), timeout=timeout_seconds)
+    finally:
+        environment = getattr(trial, 'agent_environment', None)
+        cleanup_error = getattr(environment, 'cleanup_error', None)
+        if cleanup_error:
+            raise RuntimeError(cleanup_error)
+    return result
+
 
 COMMON_EXTRA_PARAMS = {
     'environment_type': {
         'type': 'str',
         'description': 'Environment type for running the benchmark.',
         'value': 'docker',
-        'choices': ['docker', 'daytona', 'e2b', 'modal']
+        'choices': ['docker', 'daytona', 'e2b', 'modal', 'ack']
     },
     'agent_name': {
         'type': 'str',
@@ -86,6 +103,17 @@ class _TerminalBenchBase(AgentAdapter):
         self.timeout_multiplier = self.extra_params.get('timeout_multiplier', 1.0)
         self.max_turns = self.extra_params.get('max_turns', 200)
         self.environment_kwargs = self.extra_params.get('environment_kwargs', {})
+        if self.environment_type == 'ack':
+            if self.name != 'terminal_bench_v2_1':
+                raise ValueError('ACK is only enabled for the fixed Terminal-Bench 2.1 smoke.')
+            if self.agent_name != 'terminus-2' or self.max_turns != 500:
+                raise ValueError('Terminal-Bench ACK requires terminus-2 with max_turns=500.')
+            if self.timeout_multiplier != 16.0:
+                raise ValueError('Terminal-Bench ACK requires the fixed four-hour timeout multiplier.')
+            if self.environment_kwargs != {'profile': 'terminal_bench_2_1_fixed'}:
+                raise ValueError('Terminal-Bench ACK requires the fixed platform environment profile.')
+            if self.limit != 1 or self.repeats != 1 or self.shuffle:
+                raise ValueError('Terminal-Bench ACK permits exactly one fixed sample without shuffle or repeats.')
 
     def load(self):
         _validate_environment_requirements(self.environment_type)
@@ -96,6 +124,8 @@ class _TerminalBenchBase(AgentAdapter):
             name=self.hub_dataset_name,
             overwrite=self.force_redownload,
             download_dir=Path(os.path.join(DEFAULT_EVALSCOPE_CACHE_DIR, self.name)),
+            task_names=[TASK_NAME] if self.environment_type == 'ack' else None,
+            n_tasks=1 if self.environment_type == 'ack' else None,
         )
 
         logger.info(f'Downloading dataset for {self.pretty_name} from Harbor Hub...')
@@ -126,8 +156,21 @@ class _TerminalBenchBase(AgentAdapter):
 
         from .utils import HarborLLM
 
-        env_kwargs = {k: v for k, v in self.environment_kwargs.items() if k != 'type'}
-        environment_config = EnvironmentConfig(type=self.environment_type, **env_kwargs)
+        if self.environment_type == 'ack':
+            if sample.metadata.get('name') != TASK_NAME or sample.metadata.get('ref') != TASK_PACKAGE_REF:
+                raise ValueError('Terminal-Bench ACK sample does not match the pinned task package.')
+            environment_config = EnvironmentConfig(
+                import_path=(
+                    'evalscope.benchmarks.terminal_bench.ack_environment:'
+                    'RestrictedACKEnvironment'
+                ),
+                force_build=False,
+                delete=True,
+                kwargs=fixed_ack_kwargs(),
+            )
+        else:
+            env_kwargs = {k: v for k, v in self.environment_kwargs.items() if k != 'type'}
+            environment_config = EnvironmentConfig(type=self.environment_type, **env_kwargs)
 
         agent_kwargs = {'max_turns': self.max_turns}
         if self.agent_name == 'terminus-2':
@@ -159,6 +202,8 @@ class _TerminalBenchBase(AgentAdapter):
                 trial = await Trial.create(trial_config)
                 if self.agent_name == 'terminus-2':
                     trial.agent._llm = HarborLLM(model=model)
+                if self.environment_type == 'ack':
+                    return await _run_ack_trial(trial)
                 return await trial.run()
 
             result = AsyncioLoopRunner.run(_run_trial())
