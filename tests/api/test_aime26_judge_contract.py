@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from collections import defaultdict
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 from flask import Flask, jsonify
 
@@ -76,20 +76,26 @@ class AIME26JudgeContractTests(unittest.TestCase):
         self.assertEqual(payload['review_processed_count'], 2)
         self.assertEqual(GLM52_AIME_SYSTEM_PROMPT.splitlines()[1], 'Explanation: {your explanation for your final answer}')
 
-    def test_review_failure_persists_prediction_before_raising(self) -> None:
+    def test_later_review_failure_preserves_all_predictions_and_prior_review(self) -> None:
         evaluator = object.__new__(DefaultEvaluator)
-        task_state = Mock(sample_id='sample-1')
+        first_state = Mock(sample_id='sample-1')
+        second_state = Mock(sample_id='sample-2')
+        first_score = Mock()
         evaluator.model = Mock()
         evaluator.benchmark_name = 'aime26'
         evaluator.benchmark = Mock(use_batch_scoring=False, save_metadata=True)
-        evaluator.benchmark.run_inference.return_value = task_state
-        evaluator.benchmark.calculate_metrics.side_effect = RuntimeError('judge unavailable')
+        evaluator.benchmark.run_inference.side_effect = [first_state, second_state]
+        evaluator.benchmark.calculate_metrics.side_effect = [first_score, RuntimeError('judge unavailable')]
         evaluator.cache_manager = Mock()
         evaluator.cache_manager.save_prediction_cache.return_value.pretty_print.return_value = 'prediction'
+        evaluator.cache_manager.save_review_cache.return_value.pretty_print.return_value = 'review'
         evaluator.task_config = Mock(eval_batch_size=1, ignore_errors=False)
         evaluator._record_perf = Mock()
         context = _PoolContext(
-            work_items=[_WorkItem(subset='default', sample=Mock())],
+            work_items=[
+                _WorkItem(subset='default', sample=Mock(sample_id='sample-1')),
+                _WorkItem(subset='default', sample=Mock(sample_id='sample-2')),
+            ],
             cached_scores_by_subset=defaultdict(list),
             review_pending_by_subset=defaultdict(list),
             model_prediction_dir='/tmp/predictions',
@@ -111,8 +117,16 @@ class AIME26JudgeContractTests(unittest.TestCase):
         ):
             evaluator._run_pool(context)
 
-        evaluator.cache_manager.save_prediction_cache.assert_called_once_with('default', task_state, True)
-        evaluator.cache_manager.save_review_cache.assert_not_called()
+        self.assertEqual(
+            evaluator.cache_manager.save_prediction_cache.call_args_list,
+            [
+                call('default', first_state, True),
+                call('default', second_state, True),
+            ],
+        )
+        evaluator.cache_manager.save_review_cache.assert_called_once_with(
+            subset='default', task_state=first_state, sample_score=first_score, save_metadata=True
+        )
 
     def test_service_resume_preserves_successful_review_cache(self) -> None:
         app = Flask(__name__)
