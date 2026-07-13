@@ -218,7 +218,7 @@ def resume_evaluation():
     task_config = _build_task_config(data)
     task_config.work_dir = work_dir
     task_config.use_cache = work_dir
-    task_config.rerun_review = True
+    task_config.rerun_review = False
 
     logger.info(f'[{task_id}] Running resume task, work_dir: {work_dir}')
     logger.info(f'[{task_id}] Model: {task_config.model}, Datasets: {task_config.datasets}')

@@ -1,6 +1,7 @@
 # Copyright (c) Alibaba, Inc. and its affiliates.
 
 import re
+import time
 from typing import Any, Dict
 
 from evalscope.api.benchmark import BenchmarkMeta, DefaultDataAdapter
@@ -82,6 +83,16 @@ Solve the following math problem step by step. Put your answer inside \\boxed{{}
 {question}
 
 Remember to put your answer inside \\boxed{{}}."""
+
+GLM52_AIME_SYSTEM_PROMPT = (
+    'Your response should be in the following format:\n'
+    'Explanation: {your explanation for your final answer}\n'
+    'Exact Answer: {your succinct, final answer}\n'
+    'Confidence: {your confidence score between 0% and 100% for your answer}.'
+)
+GLM52_AIME_PROMPT_TEMPLATE = '{question}'
+JUDGE_MAX_ATTEMPTS = 3
+JUDGE_RETRY_INTERVAL_SECONDS = 1
 
 
 @register_benchmark(
@@ -283,8 +294,54 @@ AIME 2026 (American Invitational Mathematics Examination 2026) is a benchmark ba
         few_shot_num=0,
         train_split=None,
         eval_split='test',
-        prompt_template=PROMPT_TEMPLATE,
+        prompt_template=GLM52_AIME_PROMPT_TEMPLATE,
+        system_prompt=GLM52_AIME_SYSTEM_PROMPT,
     )
 )
 class AIME26Adapter(AIME24Adapter):
-    ...
+
+    def extract_answer(self, prediction: str, task_state: TaskState) -> str:
+        from .math_normalize import normalize_answer
+
+        match = re.search(r'^Exact Answer:\s*(.+?)\s*$', prediction, re.IGNORECASE | re.MULTILINE)
+        if match:
+            normalized = normalize_answer(match.group(1).strip())
+            if re.fullmatch(r'\d+', normalized):
+                return str(int(normalized))
+            return normalized
+        return super().extract_answer(prediction, task_state)
+
+    def llm_match_score(
+        self, original_prediction: str, filtered_prediction: str, reference: str, task_state: TaskState
+    ) -> Score:
+        score = Score(
+            extracted_prediction=filtered_prediction,
+            prediction=original_prediction,
+        )
+        judge_prompt = JUDGE_PROMPT.format(expression1=original_prediction, expression2=reference)
+
+        last_response = ''
+        for attempt in range(1, JUDGE_MAX_ATTEMPTS + 1):
+            last_response = self.llm_judge.judge(prompt=judge_prompt) or ''
+            verdict = last_response.strip().lower()
+            if verdict in {'yes', 'no'}:
+                parsed_verdict = verdict == 'yes'
+                score.value = {'acc': 1.0 if parsed_verdict else 0.0}
+                score.explanation = f'LLM judge: {last_response}'
+                score.metadata = {
+                    'source': 'llm_judge',
+                    'judge_strategy': self.judge_strategy,
+                    'model': self.llm_judge.model_id,
+                    'judge_prompt': judge_prompt,
+                    'judge_response': last_response,
+                    'parsed_verdict': 'Yes' if parsed_verdict else 'No',
+                    'attempt_count': attempt,
+                }
+                score.main_score_name = 'acc'
+                return score
+            if attempt < JUDGE_MAX_ATTEMPTS:
+                time.sleep(JUDGE_RETRY_INTERVAL_SECONDS)
+
+        raise RuntimeError(
+            f'AIME judge returned no standalone Yes/No verdict after {JUDGE_MAX_ATTEMPTS} attempts'
+        )

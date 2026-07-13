@@ -23,6 +23,7 @@ from evalscope.evaluator.perf_collector import PerfCollector
 from evalscope.report import Report, gen_perf_table, gen_table
 from evalscope.utils.function_utils import run_in_threads_with_progress
 from evalscope.utils.logger import get_logger
+from evalscope.utils.tqdm_utils import ProgressTracker
 
 if TYPE_CHECKING:
     from evalscope.api.benchmark import DataAdapter
@@ -58,6 +59,14 @@ class _WorkItem:
         return self.task_state is None
 
 
+class _ReviewFailure(RuntimeError):
+
+    def __init__(self, task_state: TaskState, cause: Exception):
+        super().__init__(str(cause))
+        self.task_state = task_state
+        self.cause = cause
+
+
 @dataclass
 class _PoolContext:
     """
@@ -78,6 +87,8 @@ class _PoolContext:
     review_pending_by_subset: Dict[str, List[TaskState]]
     model_prediction_dir: str
     total_cached: int
+    prediction_cached: int
+    review_cached: int
 
     @property
     def grand_total(self) -> int:
@@ -169,6 +180,9 @@ class DefaultEvaluator(Evaluator):
 
             # Phase 1 – build unified work pool from all subsets
             context = self._collect_work_items(dataset_dict)
+            tracker = ProgressTracker.get_current()
+            if tracker is not None:
+                tracker.initialize_stage_counts(context.prediction_cached, context.review_cached)
             logger.info(
                 f'Unified pool: {len(context.work_items)} items to process, '
                 f'{context.total_cached} already fully cached '
@@ -224,11 +238,13 @@ class DefaultEvaluator(Evaluator):
         work_items: List[_WorkItem] = []
         cached_scores_by_subset: Dict[str, List[SampleScore]] = defaultdict(list)
         review_pending_by_subset: Dict[str, List[TaskState]] = defaultdict(list)
+        prediction_cached = 0
 
         for subset, dataset in dataset_dict.items():
             cached_pred_states, remaining_dataset = (
                 self.cache_manager.filter_prediction_cache(subset, dataset) if self.use_cache else ([], dataset)
             )
+            prediction_cached += len(cached_pred_states)
 
             if self.benchmark.use_batch_scoring:
                 # Prediction runs in the pool; review is deferred until all
@@ -268,6 +284,8 @@ class DefaultEvaluator(Evaluator):
             review_pending_by_subset=review_pending_by_subset,
             model_prediction_dir=model_prediction_dir,
             total_cached=total_cached,
+            prediction_cached=prediction_cached,
+            review_cached=total_cached,
         )
 
     def _run_pool(self, context: _PoolContext) -> Dict[str, List[Tuple[TaskState, Optional[SampleScore]]]]:
@@ -297,12 +315,17 @@ class DefaultEvaluator(Evaluator):
             results_by_subset[item.subset].append(result)
 
         def on_error(item: _WorkItem, exc: Exception) -> None:
+            if isinstance(exc, _ReviewFailure) and item.needs_predict:
+                self._persist_prediction(item, exc.task_state)
+                cause = exc.cause
+            else:
+                cause = exc
             tb_str = traceback.format_exc()
-            logger.error(f'Processing item in subset={item.subset!r} failed: {exc}\nTraceback:\n{tb_str}')
+            logger.error(f'Processing item in subset={item.subset!r} failed: {cause}\nTraceback:\n{tb_str}')
             if self.task_config.ignore_errors:
                 logger.warning('Error ignored, continuing with next sample.')
                 return
-            raise exc
+            raise cause
 
         run_in_threads_with_progress(
             context.work_items,
@@ -333,10 +356,16 @@ class DefaultEvaluator(Evaluator):
             ``(task_state, sample_score)`` where ``sample_score`` is ``None``
             for batch-scoring benchmarks (review deferred).
         """
-        task_state = (
-            self._predict_sample(item.sample, model_prediction_dir) if item.needs_predict else item.task_state
-        )
-        sample_score = (None if self.benchmark.use_batch_scoring else self._review_task_state(task_state))
+        tracker = ProgressTracker.get_current()
+        if item.needs_predict and tracker is not None:
+            tracker.set_phase('generating')
+        task_state = self._predict_sample(item.sample, model_prediction_dir) if item.needs_predict else item.task_state
+        if tracker is not None:
+            tracker.set_phase('judging')
+        try:
+            sample_score = (None if self.benchmark.use_batch_scoring else self._review_task_state(task_state))
+        except Exception as exc:
+            raise _ReviewFailure(task_state, exc) from exc
         return task_state, sample_score
 
     def _persist_result(
@@ -358,10 +387,7 @@ class DefaultEvaluator(Evaluator):
             sample_score: The review score, or ``None`` for batch-scoring.
         """
         if item.needs_predict:
-            model_result = self.cache_manager.save_prediction_cache(
-                item.subset, task_state, self.benchmark.save_metadata
-            )
-            logger.debug(f'Model result: \n{model_result.pretty_print()}')
+            self._persist_prediction(item, task_state)
 
         if sample_score is not None:
             review_result = self.cache_manager.save_review_cache(
@@ -371,9 +397,21 @@ class DefaultEvaluator(Evaluator):
                 save_metadata=self.benchmark.save_metadata,
             )
             logger.debug(f'Review result: \n{review_result.pretty_print()}')
+            tracker = ProgressTracker.get_current()
+            if tracker is not None:
+                tracker.record_review()
 
         if self.task_config.collect_perf and item.needs_predict:
             self._record_perf(task_state)
+
+    def _persist_prediction(self, item: _WorkItem, task_state: TaskState) -> None:
+        model_result = self.cache_manager.save_prediction_cache(
+            item.subset, task_state, self.benchmark.save_metadata
+        )
+        logger.debug(f'Model result: \n{model_result.pretty_print()}')
+        tracker = ProgressTracker.get_current()
+        if tracker is not None:
+            tracker.record_prediction()
 
     def _record_perf(self, task_state: TaskState) -> None:
         """Record per-request performance metrics into :attr:`perf_collector`.
@@ -415,6 +453,9 @@ class DefaultEvaluator(Evaluator):
             Mapping of subset name → aggregated scores.  Empty subsets omitted.
         """
         agg_score_dict: Dict[str, List[AggScore]] = {}
+        tracker = ProgressTracker.get_current()
+        if tracker is not None:
+            tracker.set_phase('aggregating')
 
         for subset in dataset_dict:
             cached_scores = context.cached_scores_by_subset.get(subset, [])
