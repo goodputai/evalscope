@@ -160,7 +160,10 @@ def terminal_bench_preflight(
             client_module = client
         else:
             core_api, auth_api, client_module = client_factory()
-        core_api.read_namespace(TASK_NAMESPACE)
+        managed_pods = core_api.list_namespaced_pod(
+            TASK_NAMESPACE,
+            label_selector=','.join(f'{key}={value}' for key, value in MANAGED_LABELS.items()),
+        ).items
         checks['kubernetes_api'] = _result('ready', f'Namespace {TASK_NAMESPACE} is reachable.')
 
         rbac_ready, rbac_detail = _controller_rbac_ready(auth_api, client_module)
@@ -169,11 +172,7 @@ def terminal_bench_preflight(
         pull_ready, pull_detail = _pod_pull_attestation(core_api)
         checks['image_pull_attestation'] = _result('ready' if pull_ready else 'blocked', pull_detail)
 
-        active = core_api.list_namespaced_pod(
-            TASK_NAMESPACE,
-            label_selector=','.join(f'{key}={value}' for key, value in MANAGED_LABELS.items()),
-        ).items
-        active = [pod for pod in active if pod.status.phase not in {'Succeeded', 'Failed'}]
+        active = [pod for pod in managed_pods if pod.status.phase not in {'Succeeded', 'Failed'}]
         checks['executor_capacity'] = _result(
             'ready' if not active else 'blocked',
             'No active or residual Terminal-Bench task Pod exists.'
