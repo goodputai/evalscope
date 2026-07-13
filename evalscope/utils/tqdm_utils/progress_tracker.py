@@ -55,6 +55,9 @@ class ProgressTracker:
         self._processed_count: int = 0
         self._status = 'running'
         self._pipeline = pipeline
+        self._phase: Optional[str] = None
+        self._prediction_processed_count: int = 0
+        self._review_processed_count: int = 0
         self._write_interval = write_interval
         self._last_write_time: float = 0.0
         if total_count is None or total_count <= 0:
@@ -102,6 +105,27 @@ class ProgressTracker:
             self._status = status
             self._write(force=True)
 
+    def set_phase(self, phase: str) -> None:
+        with self._lock:
+            self._phase = phase
+            self._write(force=True)
+
+    def initialize_stage_counts(self, prediction_count: int, review_count: int) -> None:
+        with self._lock:
+            self._prediction_processed_count = max(0, prediction_count)
+            self._review_processed_count = max(0, review_count)
+            self._write(force=True)
+
+    def record_prediction(self) -> None:
+        with self._lock:
+            self._prediction_processed_count += 1
+            self._write(force=False)
+
+    def record_review(self) -> None:
+        with self._lock:
+            self._review_processed_count += 1
+            self._write(force=False)
+
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
@@ -124,8 +148,11 @@ class ProgressTracker:
         state = {
             'status': self._status,
             'pipeline': self._pipeline,
+            'phase': self._phase,
             'total_count': self._total_count,
             'processed_count': processed,
+            'prediction_processed_count': self._prediction_processed_count,
+            'review_processed_count': self._review_processed_count,
             'percent': percent,
             'updated_at': current_time().isoformat(),
         }
