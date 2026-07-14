@@ -22,11 +22,43 @@ TASK_RESOURCE_REQUESTS = {
     'memory': '2048Mi',
     'ephemeral-storage': '10240Mi',
 }
+TMUX_BOOTSTRAP_TIMEOUT_SECONDS = 120
+TMUX_TOOL_ROOT = '/tmp/terminal-bench-tmux'
+TMUX_APT_PACKAGES = (
+    'tmux=3.4-1ubuntu0.1',
+    'libevent-core-2.1-7t64=2.1.12-stable-9ubuntu2',
+    'libutempter0=1.2.1-3build1',
+)
 MANAGED_LABELS = {
     'app.kubernetes.io/name': 'terminal-bench-task',
     'app.kubernetes.io/managed-by': 'evalscope',
     'llm-eval.goodput.ai/profile': 'terminal-bench-2-1-fixed',
 }
+
+
+def tmux_bootstrap_command() -> str:
+    packages = ' '.join(TMUX_APT_PACKAGES)
+    library_path = f'{TMUX_TOOL_ROOT}/usr/lib/x86_64-linux-gnu'
+    return (
+        'set -eu; umask 022; '
+        f'rm -rf {TMUX_TOOL_ROOT} /tmp/terminal-bench-apt /tmp/terminal-bench-debs; '
+        'mkdir -p /tmp/terminal-bench-apt/lists/partial '
+        '/tmp/terminal-bench-apt/archives/partial /tmp/terminal-bench-debs '
+        f'{TMUX_TOOL_ROOT}; '
+        'apt-get -o APT::Sandbox::User=root '
+        '-o Dir::State::lists=/tmp/terminal-bench-apt/lists '
+        '-o Dir::Cache::archives=/tmp/terminal-bench-apt/archives update >/dev/null; '
+        'cd /tmp/terminal-bench-debs; '
+        'apt-get -o APT::Sandbox::User=root '
+        '-o Dir::State::lists=/tmp/terminal-bench-apt/lists '
+        f'download {packages} >/dev/null; '
+        f'for package in *.deb; do dpkg-deb --fsys-tarfile "$package" '
+        f'| tar -x --no-same-owner -C {TMUX_TOOL_ROOT}; done; '
+        "printf '%s\\n' '#!/bin/sh' "
+        f"'export LD_LIBRARY_PATH={library_path}${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}' "
+        f"'exec {TMUX_TOOL_ROOT}/usr/bin/tmux \"$@\"' > /usr/local/bin/tmux; "
+        'chmod 0755 /usr/local/bin/tmux; tmux -V >/dev/null'
+    )
 
 
 def fixed_ack_kwargs() -> dict[str, Any]:
@@ -190,6 +222,16 @@ class RestrictedACKEnvironment(ACKEnvironment):
             user=effective_user,
         )
 
+    async def _bootstrap_tmux(self) -> None:
+        result = await self.exec(
+            command=tmux_bootstrap_command(),
+            timeout_sec=TMUX_BOOTSTRAP_TIMEOUT_SECONDS,
+            user='root',
+        )
+        if result.return_code != 0:
+            detail = (result.stderr or result.stdout or '').strip()[-2000:]
+            raise RuntimeError(f'Terminal-Bench tmux bootstrap failed: {detail}')
+
     async def start(self, force_build: bool) -> None:
         if force_build:
             raise ValueError('Terminal-Bench ACK image builds are disabled.')
@@ -199,6 +241,7 @@ class RestrictedACKEnvironment(ACKEnvironment):
         if not isinstance(self._core_api, _ValidatingCoreApi):
             self._core_api = _ValidatingCoreApi(self._core_api)
         await super().start(force_build=False)
+        await self._bootstrap_tmux()
 
     async def stop(self, delete: bool) -> None:
         pod_name = self.pod_name

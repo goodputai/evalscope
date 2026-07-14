@@ -180,6 +180,8 @@ class _TerminalBenchBase(AgentAdapter):
                 'proactive_summarization_threshold': 8000,
                 'collect_rollout_details': False,
             })
+            if self.environment_type == 'ack':
+                agent_kwargs['record_terminal_session'] = False
 
         agent_config = AgentConfig(
             name=self.agent_name,

@@ -15,7 +15,9 @@ from evalscope.benchmarks.terminal_bench.ack_environment import (
     RELAY_IMAGE,
     RestrictedACKEnvironment,
     TASK_SERVICE_ACCOUNT,
+    TMUX_APT_PACKAGES,
     validate_rendered_pod,
+    tmux_bootstrap_command,
 )
 from evalscope.benchmarks.terminal_bench.preflight import terminal_bench_preflight
 from evalscope.benchmarks.terminal_bench.terminal_bench_adapter import (
@@ -114,6 +116,29 @@ def test_ack_exec_does_not_su_when_the_fixed_pod_is_already_root(
         timeout_sec=None,
         user=effective_user,
     )
+
+
+def test_tmux_bootstrap_preserves_the_restricted_pod_security_boundary():
+    command = tmux_bootstrap_command()
+
+    assert 'APT::Sandbox::User=root' in command
+    assert 'dpkg-deb --fsys-tarfile' in command
+    assert 'tar -x --no-same-owner' in command
+    assert 'apt-get install' not in command
+    for package in TMUX_APT_PACKAGES:
+        assert package in command
+
+    environment = object.__new__(RestrictedACKEnvironment)
+    with patch.object(
+        RestrictedACKEnvironment,
+        'exec',
+        new_callable=AsyncMock,
+        return_value=SimpleNamespace(return_code=0, stdout='tmux 3.4', stderr=''),
+    ) as exec_command:
+        asyncio.run(environment._bootstrap_tmux())
+
+    exec_command.assert_awaited_once()
+    assert exec_command.await_args.kwargs['user'] == 'root'
 
 
 def test_ack_trial_infrastructure_failure_is_not_scored_as_zero():
