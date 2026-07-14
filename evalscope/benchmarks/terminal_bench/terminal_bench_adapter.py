@@ -217,6 +217,8 @@ class _TerminalBenchBase(AgentAdapter):
             raise e
 
         result_dict = result.model_dump(mode='json')
+        if self.environment_type == 'ack':
+            self._raise_for_ack_failure(result_dict)
         sample.metadata['result'] = result_dict
 
         output = ModelOutput.from_content(
@@ -225,6 +227,24 @@ class _TerminalBenchBase(AgentAdapter):
         )
         trace, messages = self._load_harbor_trace(result_dict)
         return InferenceResult(output=output, trace=trace, messages=messages)
+
+    @staticmethod
+    def _raise_for_ack_failure(result_dict: dict) -> None:
+        exception_info = result_dict.get('exception_info')
+        if exception_info:
+            exception_type = exception_info.get('exception_type') or 'UnknownHarborError'
+            exception_message = (
+                exception_info.get('exception_message')
+                or exception_info.get('message')
+                or str(exception_info)
+            )
+            raise RuntimeError(
+                f'Terminal-Bench ACK trial failed with {exception_type}: {exception_message}'
+            )
+
+        rewards = ((result_dict.get('verifier_result') or {}).get('rewards') or {})
+        if rewards.get('reward') is None:
+            raise RuntimeError('Terminal-Bench ACK trial did not return a verifier reward.')
 
     def _load_harbor_trace(self, result_dict: dict) -> Tuple[Optional[AgentTrace], Optional[List[ChatMessage]]]:
         trial_uri = result_dict.get('trial_uri') or ''

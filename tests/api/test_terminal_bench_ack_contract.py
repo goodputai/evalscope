@@ -2,9 +2,10 @@ import asyncio
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
+from harbor.environments.ack import ACKEnvironment
 
 from evalscope.benchmarks.terminal_bench.ack_environment import (
     IMAGE_DIGEST,
@@ -12,11 +13,15 @@ from evalscope.benchmarks.terminal_bench.ack_environment import (
     MANAGED_LABELS,
     NODE_LABEL_KEY,
     RELAY_IMAGE,
+    RestrictedACKEnvironment,
     TASK_SERVICE_ACCOUNT,
     validate_rendered_pod,
 )
 from evalscope.benchmarks.terminal_bench.preflight import terminal_bench_preflight
-from evalscope.benchmarks.terminal_bench.terminal_bench_adapter import _run_ack_trial
+from evalscope.benchmarks.terminal_bench.terminal_bench_adapter import (
+    TerminalBenchV2_1Adapter,
+    _run_ack_trial,
+)
 
 
 def rendered_pod() -> dict:
@@ -87,6 +92,50 @@ def test_rendered_pod_contract_accepts_only_the_fixed_shape():
     for pod in mutations:
         with pytest.raises(ValueError):
             validate_rendered_pod(pod)
+
+
+@pytest.mark.parametrize(('requested_user', 'effective_user'), [
+    ('root', None),
+    (0, None),
+    ('task-user', 'task-user'),
+])
+def test_ack_exec_does_not_su_when_the_fixed_pod_is_already_root(
+    requested_user,
+    effective_user,
+):
+    environment = object.__new__(RestrictedACKEnvironment)
+    with patch.object(ACKEnvironment, 'exec', new_callable=AsyncMock) as parent_exec:
+        asyncio.run(environment.exec('id', user=requested_user))
+
+    parent_exec.assert_awaited_once_with(
+        command='id',
+        cwd=None,
+        env=None,
+        timeout_sec=None,
+        user=effective_user,
+    )
+
+
+def test_ack_trial_infrastructure_failure_is_not_scored_as_zero():
+    with pytest.raises(RuntimeError, match='HarborSetupError: tmux unavailable'):
+        TerminalBenchV2_1Adapter._raise_for_ack_failure({
+            'exception_info': {
+                'exception_type': 'HarborSetupError',
+                'exception_message': 'tmux unavailable',
+            },
+            'verifier_result': None,
+        })
+
+    with pytest.raises(RuntimeError, match='did not return a verifier reward'):
+        TerminalBenchV2_1Adapter._raise_for_ack_failure({
+            'exception_info': None,
+            'verifier_result': None,
+        })
+
+    TerminalBenchV2_1Adapter._raise_for_ack_failure({
+        'exception_info': None,
+        'verifier_result': {'rewards': {'reward': 0}},
+    })
 
 
 def test_short_wall_clock_timeout_runs_trial_cleanup():

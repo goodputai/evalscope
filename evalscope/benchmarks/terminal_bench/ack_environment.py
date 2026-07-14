@@ -3,6 +3,7 @@ import asyncio
 from typing import Any
 
 from harbor.environments.ack import ACKEnvironment
+from harbor.environments.base import ExecResult
 from kubernetes.client.rest import ApiException
 
 
@@ -169,6 +170,25 @@ class RestrictedACKEnvironment(ACKEnvironment):
             raise ValueError('Terminal-Bench ACK scheduling boundary changed.')
         if self.pod_overrides != expected['pod_overrides']:
             raise ValueError('Terminal-Bench ACK Pod security boundary changed.')
+
+    async def exec(
+        self,
+        command: str,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        timeout_sec: int | None = None,
+        user: str | int | None = None,
+    ) -> ExecResult:
+        # The fixed Pod already runs as UID 0. Harbor's extra `su root` needs
+        # SETUID/SETGID capabilities, which this profile intentionally drops.
+        effective_user = None if user in {'root', 0} else user
+        return await super().exec(
+            command=command,
+            cwd=cwd,
+            env=env,
+            timeout_sec=timeout_sec,
+            user=effective_user,
+        )
 
     async def start(self, force_build: bool) -> None:
         if force_build:
