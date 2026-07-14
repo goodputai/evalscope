@@ -16,6 +16,11 @@ TASK_SERVICE_ACCOUNT = 'terminal-task-no-token'
 CONTROLLER_SERVICE_ACCOUNT = 'evalscope-terminal-controller'
 IMAGE_PULL_SECRET = 'terminal-bench-ghcr-pull'
 NODE_LABEL_KEY = 'workload.goodput.ai/terminal-bench'
+TASK_RESOURCE_REQUESTS = {
+    'cpu': '1',
+    'memory': '2048Mi',
+    'ephemeral-storage': '10240Mi',
+}
 MANAGED_LABELS = {
     'app.kubernetes.io/name': 'terminal-bench-task',
     'app.kubernetes.io/managed-by': 'evalscope',
@@ -88,7 +93,7 @@ def validate_rendered_pod(pod: dict[str, Any]) -> None:
         raise ValueError('Terminal-Bench ACK Pod toleration changed.')
     if not MANAGED_LABELS.items() <= (metadata.get('labels') or {}).items():
         raise ValueError('Terminal-Bench ACK Pod managed labels changed.')
-    if resources != {'cpu': '1', 'memory': '2048Mi', 'ephemeral-storage': '10240Mi'}:
+    if resources != TASK_RESOURCE_REQUESTS:
         raise ValueError('Terminal-Bench ACK Pod resources changed.')
     if any(spec.get(key) for key in ('hostNetwork', 'hostPID', 'hostIPC', 'volumes', 'initContainers')):
         raise ValueError('Terminal-Bench ACK Pod contains forbidden host, volume, or init-container access.')

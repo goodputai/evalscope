@@ -8,6 +8,7 @@ from typing import Any, Callable
 import evalscope
 import evalscope.benchmarks  # noqa: F401
 from evalscope.api.registry import BENCHMARK_REGISTRY
+from kubernetes.utils.quantity import parse_quantity
 
 from .ack_environment import (
     CONTROLLER_SERVICE_ACCOUNT,
@@ -17,6 +18,7 @@ from .ack_environment import (
     NODE_LABEL_KEY,
     RELAY_IMAGE,
     TASK_NAMESPACE,
+    TASK_RESOURCE_REQUESTS,
     TASK_SERVICE_ACCOUNT,
 )
 
@@ -33,6 +35,18 @@ def _installed_version(package: str) -> str | None:
         return version(package)
     except PackageNotFoundError:
         return None
+
+
+def _resource_requests_match(requests: dict[str, str]) -> bool:
+    if requests.keys() != TASK_RESOURCE_REQUESTS.keys():
+        return False
+    try:
+        return all(
+            parse_quantity(requests[name]) == parse_quantity(expected)
+            for name, expected in TASK_RESOURCE_REQUESTS.items()
+        )
+    except ValueError:
+        return False
 
 
 def _pod_pull_attestation(core_api) -> tuple[bool, str]:
@@ -68,7 +82,7 @@ def _pod_pull_attestation(core_api) -> tuple[bool, str]:
         matching_toleration,
         pull_secrets == [IMAGE_PULL_SECRET],
         container is not None and container.image == RELAY_IMAGE,
-        requests == {'cpu': '1', 'memory': '2048Mi', 'ephemeral-storage': '10240Mi'},
+        _resource_requests_match(requests),
         security is not None and security.privileged is False,
         security is not None and security.allow_privilege_escalation is False,
         security is not None and list(security.capabilities.drop or []) == ['ALL'],

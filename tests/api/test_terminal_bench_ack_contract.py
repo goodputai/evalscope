@@ -147,7 +147,7 @@ def pull_probe():
             capabilities=SimpleNamespace(drop=['ALL']),
         ),
         resources=SimpleNamespace(requests={
-            'cpu': '1', 'memory': '2048Mi', 'ephemeral-storage': '10240Mi'
+            'cpu': '1', 'memory': '2Gi', 'ephemeral-storage': '10Gi'
         }),
     )
     return SimpleNamespace(
