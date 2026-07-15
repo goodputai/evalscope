@@ -6,7 +6,7 @@ from datetime import datetime
 from flask import Flask, jsonify, send_from_directory
 
 from evalscope.utils.logger import get_logger
-from .blueprints import bp_eval, bp_perf, bp_reports
+from .blueprints import bp_eval, bp_perf, bp_reports, bp_terminal_bench
 from .utils import OUTPUT_DIR as _DEFAULT_ROOT
 
 logger = get_logger()
@@ -47,6 +47,7 @@ def create_app(outputs: str = None):
     app.register_blueprint(bp_eval)
     app.register_blueprint(bp_perf)
     app.register_blueprint(bp_reports)
+    app.register_blueprint(bp_terminal_bench)
 
     @app.route('/health', methods=['GET'])
     def health_check():
@@ -85,6 +86,7 @@ def create_app(outputs: str = None):
                 'GET  /api/v1/eval/benchmarks': 'List supported benchmarks with descriptions',
                 'GET  /api/v1/eval/log': 'Get evaluation log',
                 'GET  /api/v1/eval/progress': 'Get real-time evaluation progress',
+                'GET  /api/v1/terminal-bench/preflight': 'Validate the Terminal-Bench Docker runtime',
                 'GET  /api/v1/eval/report': 'Get HTML evaluation report',
                 'POST /api/v1/eval/resume/invoke': 'Resume a previous evaluation (blocking)',
                 'POST /api/v1/perf/invoke': 'Run performance benchmark task (blocking)',

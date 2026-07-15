@@ -11,10 +11,14 @@ class HarborLLM(BaseModel, BaseLLM):
     """A mock LLM that simulates sandboxed code execution."""
     model_config = ConfigDict(arbitrary_types_allowed=True)
     _model: Model = PrivateAttr()
+    _context_limit: int = PrivateAttr()
+    _output_limit: int = PrivateAttr()
 
-    def __init__(self, model: Model, **kwargs):
+    def __init__(self, model: Model, context_limit: int | None = None, output_limit: int | None = None, **kwargs):
         super().__init__(**kwargs)
         self._model = model
+        self._context_limit = context_limit or model.config.max_tokens or 100_000
+        self._output_limit = output_limit or model.config.max_tokens or 16_384
 
     @property
     def model(self):
@@ -47,7 +51,7 @@ class HarborLLM(BaseModel, BaseLLM):
         )
 
     def get_model_context_limit(self):
-        return self._model.config.max_tokens or 100_000
+        return self._context_limit
 
     def get_model_output_limit(self):
-        return self._model.config.max_tokens or 16384
+        return self._output_limit

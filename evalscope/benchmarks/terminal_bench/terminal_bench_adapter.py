@@ -48,6 +48,26 @@ COMMON_EXTRA_PARAMS = {
         'description': 'Maximum number of turns for the agent to complete the task.',
         'value': 200,
     },
+    'dataset_ref': {
+        'type': 'str',
+        'description': 'Immutable Harbor dataset revision or content hash.',
+        'value': 'latest',
+    },
+    'model_context_limit': {
+        'type': 'int',
+        'description': 'Context-window limit advertised to the Harbor agent.',
+        'value': 100000,
+    },
+    'model_output_limit': {
+        'type': 'int',
+        'description': 'Per-call output-token limit advertised to the Harbor agent.',
+        'value': 16384,
+    },
+    'agent_timeout_seconds': {
+        'type': 'int',
+        'description': 'Exact Harbor agent phase timeout in seconds. Null preserves task defaults.',
+        'value': None,
+    },
     'environment_kwargs': {
         'type': 'dict',
         'description': 'Extra kwargs passed to Harbor EnvironmentConfig. '
@@ -85,6 +105,10 @@ class _TerminalBenchBase(AgentAdapter):
         self.agent_name = self.extra_params.get('agent_name', 'terminus-2')
         self.timeout_multiplier = self.extra_params.get('timeout_multiplier', 1.0)
         self.max_turns = self.extra_params.get('max_turns', 200)
+        self.dataset_ref = self.extra_params.get('dataset_ref', 'latest')
+        self.model_context_limit = self.extra_params.get('model_context_limit', 100_000)
+        self.model_output_limit = self.extra_params.get('model_output_limit', 16_384)
+        self.agent_timeout_seconds = self.extra_params.get('agent_timeout_seconds')
         self.environment_kwargs = self.extra_params.get('environment_kwargs', {})
 
     def load(self):
@@ -94,6 +118,7 @@ class _TerminalBenchBase(AgentAdapter):
 
         config = DatasetConfig(
             name=self.hub_dataset_name,
+            ref=self.dataset_ref,
             overwrite=self.force_redownload,
             download_dir=Path(os.path.join(DEFAULT_EVALSCOPE_CACHE_DIR, self.name)),
         )
@@ -142,6 +167,7 @@ class _TerminalBenchBase(AgentAdapter):
             name=self.agent_name,
             model_name=model.name,
             kwargs=agent_kwargs,
+            override_timeout_sec=self.agent_timeout_seconds,
         )
 
         trial_task_config = TrialTaskConfig.model_validate(sample.metadata)
@@ -158,7 +184,11 @@ class _TerminalBenchBase(AgentAdapter):
             async def _run_trial():
                 trial = await Trial.create(trial_config)
                 if self.agent_name == 'terminus-2':
-                    trial.agent._llm = HarborLLM(model=model)
+                    trial.agent._llm = HarborLLM(
+                        model=model,
+                        context_limit=self.model_context_limit,
+                        output_limit=self.model_output_limit,
+                    )
                 return await trial.run()
 
             result = AsyncioLoopRunner.run(_run_trial())
