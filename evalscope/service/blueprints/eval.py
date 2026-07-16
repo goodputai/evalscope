@@ -17,12 +17,14 @@ from ..utils import (
     create_log_file,
     discover_all_benchmarks,
     get_log_content,
+    process_status,
     run_eval_wrapper,
     run_in_subprocess,
     serialize_result,
     stop_process,
     validate_task_id,
 )
+from evalscope.utils.runtime_liveness import read_runtime_liveness
 
 logger = get_logger()
 
@@ -142,11 +144,17 @@ def _all_results_empty(result) -> bool:
     return False
 
 
-def _execute_task(task_id: str, task_config: TaskConfig, label: str = 'Task'):
+def _execute_task(task_id: str, task_config: TaskConfig, label: str = 'Task', attempt_id: str | None = None):
     """Run the evaluation subprocess and return a Flask response."""
     create_log_file(task_id, os.path.join('logs', 'eval_log.log'))
     try:
-        result = run_in_subprocess(run_eval_wrapper, task_config, task_id=task_id)
+        result = run_in_subprocess(
+            run_eval_wrapper,
+            task_config,
+            attempt_id,
+            task_id=task_id,
+            ownership_attempt_id=attempt_id,
+        )
         table_str = _build_result_table(task_config.work_dir)
         if _all_results_empty(result):
             error_msg = (
@@ -182,7 +190,12 @@ def run_evaluation():
     logger.info(f'[{task_id}] Running evaluation task for model: {task_config.model}')
     logger.info(f'[{task_id}] Datasets: {task_config.datasets}')
 
-    return _execute_task(task_id, task_config, label='Task')
+    return _execute_task(
+        task_id,
+        task_config,
+        label='Task',
+        attempt_id=request.headers.get('EvalScope-Attempt-Id'),
+    )
 
 
 @bp_eval.route('/stop', methods=['POST'])
@@ -201,6 +214,27 @@ def stop_evaluation():
         return jsonify({'status': 'stopped', 'task_id': task_id}), 200
     else:
         return jsonify({'error': f'No running task found for task_id: {task_id}'}), 404
+
+
+@bp_eval.route('/status', methods=['GET'])
+def get_evaluation_status():
+    task_id = request.args.get('task_id')
+    if not task_id:
+        return jsonify({'error': 'task_id is required'}), 400
+    try:
+        validate_task_id(task_id)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    ownership = process_status(task_id)
+    status = read_runtime_liveness(os.path.join(OUTPUT_DIR, task_id))
+    status.update({
+        'task_id': task_id,
+        'running': ownership['running'],
+        'pid': ownership['pid'],
+        'active_attempt_id': ownership['attempt_id'],
+        'output_exists': os.path.isdir(os.path.join(OUTPUT_DIR, task_id)),
+    })
+    return jsonify(status), 200
 
 
 @bp_eval.route('/resume/invoke', methods=['POST'])
@@ -223,7 +257,12 @@ def resume_evaluation():
     logger.info(f'[{task_id}] Running resume task, work_dir: {work_dir}')
     logger.info(f'[{task_id}] Model: {task_config.model}, Datasets: {task_config.datasets}')
 
-    return _execute_task(task_id, task_config, label='Resume task')
+    return _execute_task(
+        task_id,
+        task_config,
+        label='Resume task',
+        attempt_id=request.headers.get('EvalScope-Attempt-Id'),
+    )
 
 
 @bp_eval.route('/progress', methods=['GET'])

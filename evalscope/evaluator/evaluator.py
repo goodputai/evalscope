@@ -23,6 +23,7 @@ from evalscope.evaluator.perf_collector import PerfCollector
 from evalscope.report import Report, gen_perf_table, gen_table
 from evalscope.utils.function_utils import run_in_threads_with_progress
 from evalscope.utils.logger import get_logger
+from evalscope.utils.runtime_liveness import record_sample_started
 from evalscope.utils.tqdm_utils import ProgressTracker
 
 if TYPE_CHECKING:
@@ -357,6 +358,8 @@ class DefaultEvaluator(Evaluator):
             for batch-scoring benchmarks (review deferred).
         """
         tracker = ProgressTracker.get_current()
+        sample_id = item.sample.id if item.needs_predict else item.task_state.sample_id
+        record_sample_started(f'{self.benchmark_name}:{item.subset}:{sample_id}')
         if item.needs_predict and tracker is not None:
             tracker.set_phase('generating')
         task_state = self._predict_sample(item.sample, model_prediction_dir) if item.needs_predict else item.task_state

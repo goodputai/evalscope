@@ -13,6 +13,7 @@ from evalscope.api.tool import ToolChoice, ToolInfo
 from evalscope.utils import get_logger
 from evalscope.utils.argument_utils import get_supported_params
 from evalscope.utils.function_utils import AsyncioLoopRunner, async_retry_call, retry_call
+from evalscope.utils.runtime_liveness import record_request_started, record_stream_event
 from .utils.anthropic import (
     anthropic_chat_messages,
     anthropic_chat_tool_choice,
@@ -175,6 +176,7 @@ class AnthropicCompatibleAPI(ModelAPI):
         try:
             t_start = time.monotonic()
             ttft: Optional[float] = None
+            record_request_started()
 
             # Generate completion
             message = retry_call(
@@ -186,7 +188,7 @@ class AnthropicCompatibleAPI(ModelAPI):
 
             # Handle streaming response
             if not isinstance(message, Message):
-                message, ttft = collect_stream_response(message, request_start=t_start)
+                message, ttft = collect_stream_response(message, request_start=t_start, on_event=record_stream_event)
 
             total_time = time.monotonic() - t_start
 
@@ -259,6 +261,7 @@ class AnthropicCompatibleAPI(ModelAPI):
         try:
             t_start = time.monotonic()
             ttft: Optional[float] = None
+            record_request_started()
 
             # Async generation with retry
             message = await async_retry_call(
@@ -270,7 +273,11 @@ class AnthropicCompatibleAPI(ModelAPI):
 
             # Handle streaming response
             if not isinstance(message, Message):
-                message, ttft = await async_collect_stream_response(message, request_start=t_start)
+                message, ttft = await async_collect_stream_response(
+                    message,
+                    request_start=t_start,
+                    on_event=record_stream_event,
+                )
 
             total_time = time.monotonic() - t_start
 

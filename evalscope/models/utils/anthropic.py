@@ -599,6 +599,7 @@ def anthropic_media_filter(key: Optional[Any], value: Any) -> Any:
 def collect_stream_response(
     response_stream: Any,
     request_start: Optional[float] = None,
+    on_event: Optional[Any] = None,
 ) -> Tuple[Message, Optional[float]]:
     """Collect streaming response chunks into a single Message.
 
@@ -648,6 +649,8 @@ def collect_stream_response(
     ttft: Optional[float] = None
 
     for event in response_stream:
+        if on_event is not None:
+            on_event(event)
         if isinstance(event, MessageStartEvent):
             message_id = event.message.id
             model = event.message.model
@@ -775,6 +778,7 @@ def _append_content_block(
 async def async_collect_stream_response(
     response_stream: Any,
     request_start: Optional[float] = None,
+    on_event: Optional[Any] = None,
 ) -> Tuple[Message, Optional[float]]:
     """Async version of :func:`collect_stream_response`.
 
@@ -818,6 +822,8 @@ async def async_collect_stream_response(
     ttft: Optional[float] = None
 
     async for event in response_stream:
+        if on_event is not None:
+            on_event(event)
         if isinstance(event, MessageStartEvent):
             message_id = event.message.id
             model = event.message.model

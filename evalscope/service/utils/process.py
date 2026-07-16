@@ -18,22 +18,51 @@ logger = get_logger()
 # Active process registry – allows external stop by task_id
 # ---------------------------------------------------------------------------
 
-_active_processes: dict[str, multiprocessing.Process] = {}
+_active_processes: dict[str, multiprocessing.Process | None] = {}
 """Maps task_id → the subprocess currently running that task."""
 
 _active_lock = threading.Lock()
+_active_attempts: dict[str, str | None] = {}
+
+
+def _reserve_process(task_id: str, attempt_id: str | None = None) -> bool:
+    with _active_lock:
+        existing = _active_processes.get(task_id)
+        if task_id in _active_processes and (existing is None or existing.is_alive()):
+            return False
+        _active_processes[task_id] = None
+        _active_attempts[task_id] = attempt_id
+        return True
 
 
 def register_process(task_id: str, proc: multiprocessing.Process) -> None:
-    """Register a running subprocess so it can be stopped later."""
+    """Attach a started process to a previously reserved task slot."""
     with _active_lock:
+        if task_id not in _active_processes:
+            raise RuntimeError(f'Task {task_id} has no reserved execution slot.')
         _active_processes[task_id] = proc
 
 
-def unregister_process(task_id: str) -> None:
+def unregister_process(task_id: str, proc: multiprocessing.Process | None = None) -> None:
     """Remove a finished / stopped subprocess from the registry."""
     with _active_lock:
-        _active_processes.pop(task_id, None)
+        current = _active_processes.get(task_id)
+        if proc is None or current is proc:
+            _active_processes.pop(task_id, None)
+            _active_attempts.pop(task_id, None)
+
+
+def process_status(task_id: str) -> dict:
+    with _active_lock:
+        proc = _active_processes.get(task_id)
+        reserved = task_id in _active_processes
+        running = reserved and (proc is None or proc.is_alive())
+        return {
+            'task_id': task_id,
+            'running': running,
+            'pid': proc.pid if proc is not None and running else None,
+            'attempt_id': _active_attempts.get(task_id),
+        }
 
 
 def stop_process(task_id: str) -> bool:
@@ -43,6 +72,7 @@ def stop_process(task_id: str) -> bool:
     """
     with _active_lock:
         proc = _active_processes.pop(task_id, None)
+        _active_attempts.pop(task_id, None)
     if proc is None:
         return False
     if proc.is_alive():
@@ -95,7 +125,7 @@ def _process_worker(func, result_queue, *args, **kwargs):
             })
 
 
-def run_in_subprocess(func, *args, task_id=None, **kwargs):
+def run_in_subprocess(func, *args, task_id=None, ownership_attempt_id=None, **kwargs):
     """Run *func* in a child process and return its result (blocks caller).
 
     Returns the function's return value on success; raises on error.
@@ -115,11 +145,17 @@ def run_in_subprocess(func, *args, task_id=None, **kwargs):
     # Linux defaults to fork).
     ctx = multiprocessing.get_context('spawn')
     result_queue = ctx.Queue()
+    if task_id and not _reserve_process(task_id, ownership_attempt_id):
+        raise RuntimeError(f'Task {task_id} already has an active execution process.')
     p = ctx.Process(target=_process_worker, args=(func, result_queue, *args), kwargs=kwargs)
-    p.start()
-
-    if task_id:
-        register_process(task_id, p)
+    try:
+        p.start()
+        if task_id:
+            register_process(task_id, p)
+    except BaseException:
+        if task_id:
+            unregister_process(task_id)
+        raise
 
     res = None
     # Poll for the result while the child is alive so we continuously drain
@@ -135,7 +171,7 @@ def run_in_subprocess(func, *args, task_id=None, **kwargs):
     p.join()
 
     if task_id:
-        unregister_process(task_id)
+        unregister_process(task_id, p)
 
     if res is not None:
         if res['status'] == 'error':
@@ -170,9 +206,18 @@ def run_in_subprocess(func, *args, task_id=None, **kwargs):
 # ---------------------------------------------------------------------------
 
 
-def run_eval_wrapper(task_config: TaskConfig):
+def run_eval_wrapper(task_config: TaskConfig, runtime_attempt_id: str | None = None):
     """Run an evaluation task and return the result."""
-    return run_task(task_config)
+    from evalscope.utils.runtime_liveness import configure_runtime_liveness, update_runtime_liveness
+
+    configure_runtime_liveness(task_config.work_dir, runtime_attempt_id)
+    try:
+        result = run_task(task_config)
+        update_runtime_liveness(process_status='completed')
+        return result
+    except BaseException:
+        update_runtime_liveness(process_status='failed')
+        raise
 
 
 def run_perf_wrapper(perf_args: PerfArguments):
