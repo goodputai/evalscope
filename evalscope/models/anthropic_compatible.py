@@ -13,7 +13,11 @@ from evalscope.api.tool import ToolChoice, ToolInfo
 from evalscope.utils import get_logger
 from evalscope.utils.argument_utils import get_supported_params
 from evalscope.utils.function_utils import AsyncioLoopRunner, async_retry_call, retry_call
-from evalscope.utils.runtime_liveness import record_request_started, record_stream_event
+from evalscope.utils.runtime_liveness import (
+    record_request_closed,
+    record_request_started,
+    record_stream_event,
+)
 from .utils.anthropic import (
     anthropic_chat_messages,
     anthropic_chat_tool_choice,
@@ -210,6 +214,8 @@ class AnthropicCompatibleAPI(ModelAPI):
 
         except (BadRequestError, PermissionDeniedError) as ex:
             return self.handle_bad_request(ex)
+        finally:
+            record_request_closed()
 
     async def generate_async(
         self,
@@ -298,6 +304,8 @@ class AnthropicCompatibleAPI(ModelAPI):
 
         except (BadRequestError, PermissionDeniedError) as ex:
             return self.handle_bad_request(ex)
+        finally:
+            record_request_closed()
 
     def resolve_tools(self, tools: List[ToolInfo], tool_choice: ToolChoice,
                       config: GenerateConfig) -> Tuple[List[ToolInfo], ToolChoice, GenerateConfig]:

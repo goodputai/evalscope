@@ -23,7 +23,7 @@ from evalscope.evaluator.perf_collector import PerfCollector
 from evalscope.report import Report, gen_perf_table, gen_table
 from evalscope.utils.function_utils import run_in_threads_with_progress
 from evalscope.utils.logger import get_logger
-from evalscope.utils.runtime_liveness import record_sample_started
+from evalscope.utils.runtime_liveness import record_sample_completed, record_sample_started
 from evalscope.utils.tqdm_utils import ProgressTracker
 
 if TYPE_CHECKING:
@@ -363,6 +363,10 @@ class DefaultEvaluator(Evaluator):
         if item.needs_predict and tracker is not None:
             tracker.set_phase('generating')
         task_state = self._predict_sample(item.sample, model_prediction_dir) if item.needs_predict else item.task_state
+        # Clear the per-sample liveness fields once the generation for THIS sample
+        # is done, so the subsequent judging/finalization window is not read by the
+        # heartbeat verdict as a stalled generation on this sample. design.md §6.4.
+        record_sample_completed()
         if tracker is not None:
             tracker.set_phase('judging')
         try:

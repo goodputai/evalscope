@@ -17,6 +17,9 @@ def configure_runtime_liveness(work_dir: str, attempt_id: str | None) -> None:
         os.environ[_ATTEMPT_ID_ENV] = attempt_id
     else:
         os.environ.pop(_ATTEMPT_ID_ENV, None)
+    # RESET (not merge) the request/sample phase fields so a stale liveness.json
+    # left by a SIGKILL'd subprocess cannot pretend a generation is still open.
+    # design.md §6.4 (R2 init-merge bug).
     update_runtime_liveness(
         attempt_id=attempt_id,
         current_sample_uid=None,
@@ -24,6 +27,7 @@ def configure_runtime_liveness(work_dir: str, attempt_id: str | None) -> None:
         last_chunk_at=None,
         bytes_received=0,
         provider_request_id=None,
+        generation_request_open=False,
     )
 
 
@@ -55,11 +59,36 @@ def record_request_started() -> None:
         last_chunk_at=None,
         bytes_received=0,
         provider_request_id=None,
+        generation_request_open=True,
     )
+
+
+def record_request_closed() -> None:
+    """Mark the generation request as no longer open.
+
+    Called from a ``finally`` around both sync/async generation entrypoints
+    (``anthropic_compatible.py``). This is the P1 phase signal (design §6.4):
+    when False, the heartbeat verdict must NOT treat a stall as a hung
+    generation — there is no in-flight request to be hung.
+    """
+    update_runtime_liveness(generation_request_open=False)
 
 
 def record_sample_started(sample_uid: str) -> None:
     update_runtime_liveness(current_sample_uid=sample_uid)
+
+
+def record_sample_completed() -> None:
+    """Clear per-sample liveness fields at the sample-end boundary.
+
+    So a subsequent judging/finalization window on a new idiom is not seen as a
+    stalled generation on the now-finished sample (design §6.4).
+    """
+    update_runtime_liveness(
+        current_sample_uid=None,
+        last_chunk_at=None,
+        bytes_received=0,
+    )
 
 
 def record_stream_event(event: Any) -> None:
