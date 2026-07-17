@@ -186,7 +186,9 @@ def eval_instance(
 
     ``sandbox_config`` is a base ms_enclave ``DockerSandboxConfig`` dict
     (memory_limit / cpu_limit / platform / network_enabled / ...). Stage-required
-    fields (``image``, ``volumes``) are always injected and cannot be overridden.
+    fields (``image``, pull-progress) are always injected and cannot be overridden.
+    The workspace files are injected via ``put_dir`` (docker tar-stream), NOT a host
+    volumes bind, so this works under container-in-container sandbox nesting.
 
     Returns dict: {completed, resolved, report}.
     """
@@ -215,12 +217,6 @@ def eval_instance(
     defaults = {'tools_config': {'shell_executor': {}}}
     stage_required = {
         'image': image,
-        'volumes': {
-            str(workspace.resolve()): {
-                'bind': '/workspace',
-                'mode': 'rw',
-            }
-        },
         'pull_progress': True,
         'pull_progress_interval': 5.0,
     }
@@ -231,6 +227,13 @@ def eval_instance(
         sbx_cfg = build_sandbox_config(SandboxEngine.DOCKER, cfg_dict)
         handle = await service.create_sandbox(SandboxEngine.DOCKER, sbx_cfg)
         try:
+            # A2-fix: inject the 4 workspace files via docker API tar-stream
+            # (put_dir → container.put_archive), NOT via a host volumes bind.
+            # A host bind would be resolved by the NODE daemon against host fs
+            # and break under container-in-container sandbox nesting (ms_enclave
+            # has no get_archive, so results are read back via exec stdout).
+            await handle.put_dir(str(workspace.resolve()), '/workspace')
+            # Run the per-instance entry script inside the sandbox.
             result = await handle.execute_tool(
                 'shell_executor',
                 {
@@ -238,7 +241,21 @@ def eval_instance(
                     'timeout': int(timeout),
                 },
             )
-            return f'{result.output or ""}\n{result.error or ""}'
+            container_log = f'{result.output or ""}\n{result.error or ""}'
+            # Read output.json back via exec stdout (no volumes bind to read from host).
+            readback = await handle.execute_tool(
+                'shell_executor',
+                {'command': 'cat /workspace/output.json', 'timeout': 30},
+            )
+            stdout = (readback.output or '').strip() if readback.output else ''
+            if stdout:
+                container_log += f'\n--- output.json readback ---\n{stdout}'
+                # Mirror to host so the outer code path reading workspace/output.json still works.
+                try:
+                    (workspace / 'output.json').write_text(stdout)
+                except Exception:
+                    pass
+            return container_log
         finally:
             await handle.close()
 
