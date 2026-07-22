@@ -245,7 +245,7 @@ def summary_result(
     workload_timeline: 'WorkloadTimeline' = None,
 ) -> Tuple['BenchmarkSummary', 'PercentileResult', Optional['TraceLevelSummary'], Optional['WorkloadThroughput']]:
     result_path = os.path.dirname(result_db_path)
-    write_json_file(args.to_dict(), os.path.join(result_path, 'benchmark_args.json'))
+    write_json_file(args.to_safe_dict(), os.path.join(result_path, 'benchmark_args.json'))
 
     # Build BenchmarkSummary from the legacy create_message dict
     raw_metrics_dict = metrics.create_message(api_type=args.api)

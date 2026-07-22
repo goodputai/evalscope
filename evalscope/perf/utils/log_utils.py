@@ -155,17 +155,5 @@ def init_clearml(args: Arguments) -> None:
 
 
 def _get_sanitized_config(args: Arguments) -> dict:
-    """
-    Get configuration dict with sensitive information removed.
-
-    Args:
-        args: Arguments object containing configuration
-
-    Returns:
-        Dict with sensitive keys removed
-    """
-    config = args.to_dict()
-    sensitive_keys = ['api_key', 'wandb_api_key', 'swanlab_api_key']
-    for key in sensitive_keys:
-        config.pop(key, None)
-    return config
+    """Return the shared secret-safe performance configuration."""
+    return args.to_safe_dict()

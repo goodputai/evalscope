@@ -4,6 +4,7 @@ from flask import Blueprint, jsonify, request, send_file
 from tabulate import tabulate
 
 from evalscope.perf.arguments import Arguments as PerfArguments
+from evalscope.perf.utils.config_sanitizer import sanitize_text
 from evalscope.perf.utils.benchmark_util import Metrics
 from evalscope.perf.utils.rich_display import EmbeddingResultAnalyzer, LLMResultAnalyzer
 from evalscope.utils.logger import get_logger
@@ -98,8 +99,9 @@ def run_performance_test():
             'table': table_str
         })
     except Exception as e:
-        logger.error(f'[{task_id}] Task failed: {e}')
-        return jsonify({'status': 'error', 'task_id': task_id, 'error': str(e)}), 500
+        safe_error = sanitize_text(str(e))
+        logger.error(f'[{task_id}] Task failed: {safe_error}')
+        return jsonify({'status': 'error', 'task_id': task_id, 'error': safe_error}), 500
 
 
 @bp_perf.route('/stop', methods=['POST'])
@@ -166,8 +168,9 @@ def get_performance_log():
         result = get_log_content(task_id, os.path.join('perf', 'benchmark.log'), start_line, page)
         return jsonify(result), 200
     except Exception as e:
-        logger.error(f'Failed to get performance log: {str(e)}')
-        return jsonify({'error': str(e)}), 500
+        safe_error = sanitize_text(str(e))
+        logger.error(f'Failed to get performance log: {safe_error}')
+        return jsonify({'error': safe_error}), 500
 
 
 @bp_perf.route('/progress', methods=['GET'])

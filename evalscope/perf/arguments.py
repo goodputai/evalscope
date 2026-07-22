@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Union
 
 from evalscope.constants import DEFAULT_WORK_DIR, VisualizerType
 from evalscope.perf.multi_turn_args import IntOrRange, MultiTurnArgs, _sample_int_or_range
+from evalscope.perf.utils.config_sanitizer import sanitize_config
 from evalscope.utils import BaseArgument
 from evalscope.utils.logger import get_logger
 
@@ -449,6 +450,14 @@ class Arguments(BaseArgument):
         if v < 0:
             raise ValueError('--num-workers must be >= 0')
         return v
+
+    def to_safe_dict(self) -> Dict[str, Any]:
+        """Serialize runtime arguments without credential-bearing values."""
+        return sanitize_config(self.to_dict())
+
+    def __str__(self) -> str:
+        """Return a secret-safe JSON representation for operational logging."""
+        return json.dumps(self.to_safe_dict(), indent=4, default=str, ensure_ascii=False)
 
     # --- Model validator (cross-field logic) ---
 
