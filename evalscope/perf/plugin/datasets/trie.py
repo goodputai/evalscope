@@ -41,6 +41,7 @@ from typing import Any, Dict, Iterator
 from evalscope.perf.arguments import Arguments
 from evalscope.perf.plugin.datasets.base import Conversation, Turn
 from evalscope.perf.plugin.datasets.random_dataset import RandomDatasetPlugin
+from evalscope.perf.plugin.datasets.trie_prepared import is_prepared_trie_path, iter_prepared_conversations
 from evalscope.perf.plugin.registry import register_dataset
 from evalscope.utils.logger import get_logger
 
@@ -67,7 +68,14 @@ class TrieReplayBase(RandomDatasetPlugin):
     FILE_NAME: str = ''  # subclasses must override
 
     def __init__(self, query_parameters: Arguments):
-        super().__init__(query_parameters)
+        prepared_path = query_parameters.dataset_path
+        if prepared_path and is_prepared_trie_path(prepared_path):
+            # Prepared artifacts already contain exact prompt text, so loading a
+            # tokenizer and rebuilding RandomDatasetPlugin state is unnecessary.
+            self.query_parameters = query_parameters
+            self.tokenizer = None
+        else:
+            super().__init__(query_parameters)
         if not query_parameters.multi_turn:
             logger.warning(
                 'trie trace-replay is a multi-turn dataset; pass --multi-turn so each trace '
@@ -159,8 +167,13 @@ class TrieReplayBase(RandomDatasetPlugin):
         return turns
 
     def build_messages(self) -> Iterator[Conversation]:
-        """Yield each trace as a ``Conversation`` of pre-synthesized turns."""
+        """Yield raw synthesized traces or immutable prepared conversations."""
         path = self._resolve_dataset_path()
+        if is_prepared_trie_path(path):
+            yield from iter_prepared_conversations(path, self.query_parameters.dataset_offset)
+            return
+        if path.endswith('.gz'):
+            raise ValueError(f'Compressed TRIE dataset is not a valid prepared artifact: {path}')
         for line in self.dataset_line_by_line(path):
             line = line.strip()
             if not line:

@@ -418,7 +418,27 @@ evalscope perf \
 evalscope perf ... --dataset trie_office_work --dataset-path /path/to/your_traces.jsonl
 ```
 
-**必需参数**：`--tokenizer-path`（用于合成精确长度的 prompt）
+需要重复运行同一批精确 prompt 时，可以预构建版本化的 gzip JSONL。预构建文件保留每轮消息、输出上限、工具等待和最终轮标记；运行时无需 tokenizer，也不会再次合成 prompt：
+
+```bash
+python examples/perf/build_trie_dataset.py \
+  --dataset trie_office_work \
+  --tokenizer-path Qwen/Qwen2.5-7B-Instruct \
+  --number 1024 \
+  --seed 42 \
+  --output-path outputs/trie_office_work.prepared.jsonl.gz
+
+evalscope perf ... \
+  --dataset trie_office_work \
+  --dataset-path outputs/trie_office_work.prepared.jsonl.gz \
+  --multi-turn \
+  --parallel 4 \
+  --number 100 \
+  --duration 600 \
+  --extra-args '{"ignore_eos": true}'
+```
+
+原始 trace JSONL 模式**必需** `--tokenizer-path`，用于合成精确长度的 prompt。`evalscope-trie-prepared-v1` 模式不需要 tokenizer。
 
 **使用示例**：
 

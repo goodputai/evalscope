@@ -418,7 +418,27 @@ Bring your own trace? Feed any jsonl in the same format via `--dataset-path`:
 evalscope perf ... --dataset trie_office_work --dataset-path /path/to/your_traces.jsonl
 ```
 
-**Required**: `--tokenizer-path` (for synthesizing prompts to exact target lengths)
+For repeated runs over identical prompt bytes, build a versioned gzip JSONL artifact. The prepared file preserves every turn's messages, output cap, tool wait, and final marker; runtime loading needs no tokenizer and performs no prompt synthesis:
+
+```bash
+python examples/perf/build_trie_dataset.py \
+  --dataset trie_office_work \
+  --tokenizer-path Qwen/Qwen2.5-7B-Instruct \
+  --number 1024 \
+  --seed 42 \
+  --output-path outputs/trie_office_work.prepared.jsonl.gz
+
+evalscope perf ... \
+  --dataset trie_office_work \
+  --dataset-path outputs/trie_office_work.prepared.jsonl.gz \
+  --multi-turn \
+  --parallel 4 \
+  --number 100 \
+  --duration 600 \
+  --extra-args '{"ignore_eos": true}'
+```
+
+Raw trace JSONL mode **requires** `--tokenizer-path` to synthesize exact-length prompts. `evalscope-trie-prepared-v1` mode does not require a tokenizer.
 
 **Usage example**:
 
